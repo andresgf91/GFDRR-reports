@@ -1,0 +1,271 @@
+---
+title: "GFDRR Disbursement Report"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message=FALSE)
+library(dplyr)
+library(DBI)
+library(streamR)
+library(lubridate)
+library(ggplot2)
+library(kableExtra)
+library(wesanderson)
+library(stringr)
+library(reshape)
+library(data.table)
+library(tidyr)
+library(ggiraph)
+library(plotly)
+
+
+options(scipen=999,digits=2)
+```
+
+## DRAFT 
+
+
+```{r}
+#read-in csv file with raw data
+raw_data <- read.csv(file='GFDRR TF Expense Details - FY18 and FY19 YTD(AutoRecovered).csv',stringsAsFactors = FALSE)[1:6958,1:16]
+
+data <- raw_data %>% mutate(Disbursements.FY.2018=as.numeric(Disbursements.FY.2018),
+                            Disbursements.FY.2019...YTD.Feb.2019=as.numeric(Disbursements.FY.2019...YTD.Feb.2019))
+
+#rename dataframe columns for ease of reference 
+colnames(data) <- c("Child_TF","Child_TF_name","TF_status","TTL","Managing_unit",
+                        "GP","Trustee_number","Trustee_name","TF_creation_date",
+                        "TF_closing_date","Cost_object","Cost_object_description",
+                        "Item","Item_group","D_FY18","D_FY19")
+
+
+data[is.na(data)] <- 0
+
+detect_PMA <- function(x){
+  require(stringi)
+  x<- stri_sub(x,1,1)
+  x<- ifelse(x %in% as.character(c(1:9)),'yes','no')
+  return(x)
+}
+
+
+
+
+data$is_PMA <- detect_PMA(data$Cost_object)
+data$total_disbursed <- data$D_FY18 + data$D_FY19
+
+#save GP names and Trustee names as vectors
+GPs <- unique(data$GP)
+Trustee_names <- unique(data$Trustee_name)
+
+short_names <- c("Japan-WB Program",
+                 "MDTF-1",
+                 "Resilience-African Nations",
+                 "City Resilience Program",
+                 "ACP-EU",
+                 "Callable Funds-Standby Recovery",
+                 "MDTF-2",
+                 "Standby Recovery Financing Facility",
+                 "Risk Financing Analytics",
+                 "InsuResilience",
+                 "EU-South Asia Capacity Building",
+                 "GFDRR SDTF - Indo-Pacific Region",
+                 "Serbia National DRM SDTF",
+                 "GFDRR")
+
+
+
+to_short_names <- function (x){
+  pos <- which(Trustee_names==x)
+  new_name <- short_names[pos]
+  return(new_name)
+}
+
+data$Trustee_name <- apply(data[,8,drop=F],1,FUN = function (x) {to_short_names(x)})
+```
+
+
+
+```{r}
+#connect to SQL database
+db <- dbConnect(RSQLite::SQLite(), "~/data/GFDRR_data/GFDRR_TF_expensesFY18-19YTD.sqlite")
+
+#create table in SQL database
+dbWriteTable(db,"expenses",data, overwrite=TRUE)
+
+```
+
+
+```{r GP OVERVIEW, fig.width=12}
+# PLOT --- total spending by GP
+data %>%
+  ggplot(aes(x=GP,y=(D_FY18+D_FY19)/1000000,fill=is_PMA)) +
+  geom_bar(stat='identity') +
+  coord_flip() + 
+  theme_classic()
+
+# TABLE --- total spending by GP
+data %>% dplyr::select(GP,D_FY18,D_FY19,Item_group) %>%
+  group_by(GP,Item_group) %>% 
+  summarise('Total_disbursed (thousands)'=round(sum(D_FY18+D_FY19)/1000,2)) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height='400px')
+
+
+# PLOT --- Total spending by GP and by item_group
+data %>% 
+  ggplot(aes(x=reorder(GP,total_disbursed),
+             y=total_disbursed/1000,
+             fill=Item_group)) +
+  geom_col(stat='identity') +
+  coord_flip() + 
+  theme_classic()
+
+# PLOT --- Total spending by GP and by Fiscal Year
+data %>% 
+  ggplot(aes(x=GP,
+             y=total_disbursed, fill=GP)) +
+  geom_bar(stat='identity') +
+  theme_classic() +
+  facet_wrap(~Item_group, nrow = 6) 
+
+
+#proportion of travel expenses to total spending
+
+
+
+```
+
+
+```{r}
+# PLOT --- total spending by TRUSTEE
+data %>%
+  ggplot(aes(x=Trustee_name,y=total_disbursed/1000,fill=is_PMA)) +
+  geom_bar(stat='identity') +
+  coord_flip() + 
+  theme_classic() +
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 50)) +
+  scale_fill_discrete(breaks=c('yes','no'), name='PMA') +
+  labs(y= 'Total Disbursed (1,000s USD)', x = 'Trustee')
+
+# TABLE --- total spending by TRUSTEE
+data %>% dplyr::select(GP,D_FY18,D_FY19,Item_group) %>%
+  group_by(GP,Item_group) %>% 
+  summarise('Total_disbursed (thousands)'=round(sum(D_FY18+D_FY19)/1000,2)) %>%
+  kable() %>%
+  kable_styling() %>%
+  scroll_box(height='400px')
+
+
+# PLOT --- Total spending by TRUSTEE and by item_group
+data %>% 
+  ggplot(aes(x=reorder(GP,total_disbursed),
+             y=total_disbursed/1000,
+             fill=Item_group)) +
+  geom_col(stat='identity') +
+  coord_flip() + 
+  theme_classic()
+
+# PLOT --- Total spending by TRUSTEE and by Fiscal Year
+data %>% 
+  ggplot(aes(x=GP,
+             y=total_disbursed, fill=GP)) +
+  geom_bar(stat='identity') +
+  theme_classic() +
+  facet_wrap(~Item_group, nrow = 6) 
+
+
+#proportion of travel expenses to total spending
+
+```
+
+
+```{r}
+
+melt(data[,c('Trustee_name','D_FY18','D_FY19')],id.vars = 1) %>%
+  group_by(Trustee_name,variable) %>%
+  summarise(total=sum(value)) %>% 
+    
+  ggplot(aes(x=reorder(Trustee_name,total),y=total/1000)) +
+  geom_bar(aes(fill=variable),stat='identity',position='dodge') +
+  theme_classic() +
+  coord_flip() + 
+  scale_x_discrete(labels = function(x) str_wrap(x, width = 50))+
+  scale_fill_brewer(palette= "Paired",
+                    name="Fiscal Year",
+                    labels=c("FY18","FY19 (YTD)")) +
+  labs(title='Figure X. - Total Disbursements by Trustee',
+       x='Trustee', y='Total Disbursed (1000s USD)')
+```
+
+```{r, fig.width=12}
+trustee_long <- dcast(setDT(data),
+                      Trustee_name ~ Item_group,
+                      value.var = c("D_FY18", "D_FY19"),
+                      fun= sum)
+
+trustee_wide_prop <- trustee_long
+
+trustee_wide_prop$totalFY18 <- apply(trustee_wide_prop[,2:13],1,FUN = sum)
+trustee_wide_prop$totalFY19 <- apply(trustee_wide_prop[,14:25],1,FUN = sum)
+trustee_wide_prop$trustee_total <- trustee_wide_prop$totalFY18 + trustee_wide_prop$totalFY19
+trustee_wide_prop[,2:13] <- trustee_wide_prop[,2:13]/rowSums(trustee_wide_prop[,2:13])
+trustee_wide_prop[,14:25] <- trustee_wide_prop[,14:25]/rowSums(trustee_wide_prop[,14:25])
+trustee_wide_prop[is.na(trustee_wide_prop)] <- 0
+
+trustee_long_prop <- gather(trustee_wide_prop, "expense", "prop", -Trustee_name) 
+#eliminate rows including totals
+trustee_long_prop <- trustee_long_prop[1:336,]
+
+
+trustee_long_prop <- trustee_long_prop %>%
+  mutate(FY=stri_sub(expense,3,6)) %>% mutate(expense=stri_sub(expense,8,-1))
+
+
+gg1<-ggplot(data=trustee_long_prop, aes(x=expense, y=prop,color=Trustee_name,shape = FY, alpha=.7)) + geom_point(size=2.5) + theme_classic() + theme(legend.position="bottom") + guides(col = guide_legend(nrow = 8)) + theme(axis.text.x = element_text(angle = 50, hjust = 1)) + labs(x="Expense Category", y="Percentage (%) of Total Spending")
+
+ggplotly(gg1)
+
+
+#geom_line(linetype="dashed", size=0.5)
+
+gg <- ggplot(data=trustee_long_prop, aes(x=factor(expense), y=prop)) + geom_point() + theme_classic() + theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly(gg)
+
+ggplot(trustee_long_prop, aes(x=factor(expense), y=prop, fill=FY)) + geom_boxplot() + theme_classic() + labs(x="Expense Category", y="Percentage (%) of Total Spending", title="Total Percentage of Spending by Expense Category") + theme(axis.text.x = element_text(angle = 50, hjust = 1)) 
+
+
+
+
+```
+
+
+
+```{r}
+
+items <- data %>% select(Item_group,Item,total_disbursed,D_FY18,D_FY19,is_PMA)
+
+items %>% arrange(total_disbursed) %>% 
+  ggplot(aes(x=reorder(Item,-total_disbursed),y=total_disbursed)) + geom_col()
+
+items2<- items %>% dplyr::group_by(Item,is_PMA) %>% summarise(total_disbursed=sum(total_disbursed))
+
+
+plot_items<- items %>% dplyr::group_by(Item,is_PMA) %>% summarise(total_disbursed=sum(total_disbursed)) %>% select(Item) %>% unique() %>% as.vector()
+
+pos<-which(items2$Item%in%plot_items$Item[1:20])
+
+
+gg2<- items2 %>% ggplot(aes(x=reorder(Item,-total_disbursed),y=total_disbursed, fill=is_PMA)) + geom_col()+ theme(axis.text.x = element_text(angle = 50, hjust = 1)) 
+
+ggplotly(gg2)
+```
+
